@@ -1,13 +1,13 @@
 # SaborCriollo AI — Asistente Gastronómico Venezolano
 
-[![Streamlit](https://img.shields.io/badge/Streamlit-App-red?logo=streamlit)](https://henneranzola-asistente-gastronomia-venezolana.streamlit.app)
+[![Streamlit](https://img.shields.io/badge/Streamlit-App-red?logo=streamlit)](https://asistente-gastronomia-venezolana.streamlit.app)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
 [![Groq](https://img.shields.io/badge/Groq-LLM-7C3AED?logo=groq)](https://groq.com)
 [![FAISS](https://img.shields.io/badge/FAISS-Vector-007EC6)](https://faiss.ai)
 
 > Un asistente conversacional que combina una arquitectura multi-agente con un motor RAG para responder recetas de cocina tradicional venezolana. Desplegado en Streamlit Cloud.
 
-**[App en vivo](https://henneranzola-asistente-gastronomia-venezolana.streamlit.app)**
+**[App en vivo](https://asistente-gastronomia-venezolana.streamlit.app)**
 
 ---
 
@@ -79,9 +79,3 @@ streamlit run src/app.py
 - **UI:** Streamlit
 - **PDF:** fpdf2
 - **Datos:** 14 recetarios en texto plano (`data/*.txt`)
-
----
-
-## Licencia
-
-Proyecto académico — Universidad Tecnológica del Perú (UTP).
