@@ -1,56 +1,87 @@
-# 🇻🇪 Chef Asistente Gastronómico Virtual
+# SaborCriollo AI — Asistente Gastronómico Venezolano
 
-Un sistema conversacional avanzado e inteligente especializado en la cocina tradicional y la cultura culinaria venezolana. Este proyecto implementa una arquitectura **Multi-Agente** propia y un motor de recuperación **RAG (Retrieval-Augmented Generation)** optimizado sobre memoria RAM para garantizar respuestas verídicas, contextualizadas y libres de alucinaciones.
+[![Streamlit](https://img.shields.io/badge/Streamlit-App-red?logo=streamlit)](https://henneranzola-asistente-gastronomia-venezolana.streamlit.app)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
+[![Groq](https://img.shields.io/badge/Groq-LLM-7C3AED?logo=groq)](https://groq.com)
+[![FAISS](https://img.shields.io/badge/FAISS-Vector-007EC6)](https://faiss.ai)
 
----
+> Un asistente conversacional que combina una arquitectura multi-agente con un motor RAG para responder recetas de cocina tradicional venezolana. Desplegado en Streamlit Cloud.
 
-## 🚀 Características Principales
-
-- **Arquitectura Multi-Agente Nativa:** Flujo de trabajo coordinado mediante dos agentes con roles acoplados y responsabilidades totalmente segregadas (Buscador + Redactor).
-- **Orquestación ReAct (Reasoning & Acting):** El agente de búsqueda evalúa semánticamente la intención del usuario y decide dinámicamente qué herramientas utilizar.
-- **Motor RAG con FAISS:** Indexación local de documentos con segmentación de texto por ventanas deslizantes (*chunking* con solapamiento) y cálculo de similitud coseno de alta velocidad.
-- **Conectividad MCP (Model Context Protocol):** Integración en tiempo real con un servidor externo de Wikipedia para la resolución de consultas históricas y de contexto cultural.
-- **Skill de Exportación Dinámica:** Generación automatizada y descarga de recetas consultadas en formato PDF.
+**[App en vivo](https://henneranzola-asistente-gastronomia-venezolana.streamlit.app)**
 
 ---
 
-## 🛠️ Arquitectura del Sistema
+## Arquitectura
 
-El proyecto está diseñado bajo un pipeline secuencial de procesamiento donde el estado es compartido de forma determinista entre los componentes:
+```
+Pregunta del usuario
+        │
+        ▼
+┌──────────────────┐
+│  Agente Buscador │  ← Clasifica (receta vs. historia)
+│     (ReAct)      │  ← Busca en FAISS local
+│                  │  ← Consulta Wikipedia si es necesario
+└────────┬─────────┘
+         │ contexto + fuentes
+         ▼
+┌──────────────────┐
+│  Agente Redactor │  ← Formatea respuesta con citations
+│     (Chain)      │  ← Gestiona historial conversacional
+└────────┬─────────┘
+         │ respuesta formateada
+         ▼
+   Streamlit UI + PDF
+```
 
-1. **Agente 1: Buscador (ReAct):**
-   - *Razona:* Clasifica si la pregunta es técnica (receta) o histórica.
-   - *Actúa:* Recupera embeddings vectoriales de la base local de FAISS.
-   - *Observa:* Evalúa a través de un LLM si los datos recopilados son suficientes. Si se requiere información complementaria, consume el servidor MCP de Wikipedia.
-   - *Re-Razona:* Optimiza y reformula la consulta si la búsqueda inicial no arroja resultados satisfactorios.
-2. **Agente 2: Redactor (Chain):**
-   - Toma el contexto crudo consolidado por el buscador.
-   - Aplica restricciones estrictas de formato (Ingredientes, Preparación, Región).
-   - Gestiona la memoria a corto plazo e historial conversacional del chat.
+### Componentes
+
+| Archivo | Rol |
+|---------|-----|
+| `src/app.py` | Interfaz Streamlit — layout de dos paneles, chat + lienzo de receta |
+| `src/agents.py` | Pipeline multi-agente: Buscador (ReAct) → Redactor (Chain) |
+| `src/ingesta_rag.py` | Motor RAG: embeddings con FAISS + búsqueda híbrida (léxica + semántica) |
+| `src/mcp_server.py` | Conector a Wikipedia en español para contexto cultural |
+| `src/skill_receta.py` | Generación de PDF con fpdf2 |
 
 ---
 
-## 📦 Requisitos Previos e Instalación
+## Despliegue
 
-Para clonar y ejecutar este proyecto localmente, sigue estos pasos estructurados:
+La aplicación está desplegada en **Streamlit Cloud**. Para ejecutar localmente:
 
-### 1. Clonar el repositorio y acceder a la carpeta
 ```bash
-git clone <URL_DEL_REPOSITORIO>
-cd asistente-gastronomia
+# 1. Clonar
+git clone https://github.com/HennerAnzola/asistente-gastronomia-venezolana.git
+cd asistente-gastronomia-venezolana
 
-instalar dependencias
+# 2. Entorno virtual
+python -m venv .venv
+source .venv/bin/activate
+
+# 3. Dependencias
 pip install -r requirements.txt
 
-Para iniciar la app y ver la interfaz grafica
+# 4. Variables de entorno
+cp .env.example .env
+# Editar .env con tu GROQ_API_KEY (https://console.groq.com/keys)
+
+# 5. Ejecutar
 streamlit run src/app.py
+```
 
-Automaticamente esta pestaña de abrira en tu navegador
-http://localhost:8501
+---
 
-Uso del Chat y Funcionalidades
-Consulta de Recetas: Redacta solicitudes gastronómicas de platos tradicionales venezolanos (ej: ¿Cómo preparar una Arepa Reina Pepiada?). El sistema extraerá de forma semántica la información del recetario local indexado en FAISS.
+## Stack
 
-Información Cultural: El agente recurrirá al protocolo MCP con Wikipedia en tiempo real ante dudas históricas de los platos.
+- **LLM:** Groq (`openai/gpt-oss-20b`, `openai/gpt-oss-120b`)
+- **Embeddings:** Sentence Transformers (`all-MiniLM-L6-v2`)
+- **Vector DB:** FAISS (IndexFlatIP con similitud coseno)
+- **UI:** Streamlit
+- **PDF:** fpdf2
+- **Datos:** 14 recetarios en texto plano (`data/*.txt`)
 
-Descarga de PDF (Skill): En la interfaz interactiva, utiliza el botón de exportación para generar dinámicamente un documento PDF limpio y listo para imprimir con la receta generada.
+---
+
+## Licencia
+
+Proyecto académico — Universidad Tecnológica del Perú (UTP).
