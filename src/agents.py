@@ -1,17 +1,59 @@
 import os
+import re
 from groq import Groq
-from dotenv import load_dotenv
 from ingesta_rag import buscar_en_rag
 from mcp_server import consultar_servidor_mcp
 
-load_dotenv()
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+def _get_api_key():
+    try:
+        import streamlit as st
+        return st.secrets["GROQ_API_KEY"]
+    except Exception:
+        from dotenv import load_dotenv
+        load_dotenv()
+        return os.getenv("GROQ_API_KEY")
+
+
+client = Groq(api_key=_get_api_key())
 MAX_INTENTOS = 3
 historial_conversacion = []
 
-# ─────────────────────────────────────────────
-# AGENTE 1 — BUSCADOR (ReAct)
-# ─────────────────────────────────────────────
+MODELO_CLASIFICACION = "openai/gpt-oss-20b"
+MODELO_EVALUACION = "openai/gpt-oss-20b"
+MODELO_REDACTOR = "openai/gpt-oss-120b"
+
+
+def limpiar_respuesta_llm(texto):
+    """Elimina tags de razonamiento y extrae solo la respuesta final."""
+    if not texto:
+        return ""
+    if "<think>" in texto:
+        partes = texto.split("</think>")
+        if len(partes) > 1:
+            texto = partes[-1]
+        else:
+            return texto.strip()
+    return texto.strip()
+
+
+def llamar_llm(modelo, messages, temperature=0.1, max_tokens=1500):
+    """Llamada segura a LLM con manejo de errores."""
+    try:
+        kwargs = {
+            "model": modelo,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        completion = client.chat.completions.create(**kwargs)
+        respuesta = completion.choices[0].message.content
+        return limpiar_respuesta_llm(respuesta)
+    except Exception as e:
+        print(f"[LLM Error] Modelo {modelo}: {e}")
+        return None
+
+
 def agente_buscador(pregunta_original):
     """
     Arquitectura ReAct:
@@ -25,10 +67,9 @@ def agente_buscador(pregunta_original):
     fuentes_acumuladas = []
 
     # RAZONA: clasificar si la pregunta es historica o cultural
-    # Si lo es, ir directo al MCP sin esperar que el RAG falle
-    clasificacion = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
+    respuesta_clasificacion = llamar_llm(
+        MODELO_CLASIFICACION,
+        [
             {"role": "system", "content": "Solo responde SI o NO."},
             {"role": "user", "content": (
                 f"¿La siguiente pregunta es sobre historia, origen, cultura o tradicion "
@@ -36,9 +77,9 @@ def agente_buscador(pregunta_original):
             )}
         ],
         temperature=0,
-        max_tokens=5
+        max_tokens=50
     )
-    es_historica = "SI" in clasificacion.choices[0].message.content.upper()
+    es_historica = respuesta_clasificacion is not None and "SI" in respuesta_clasificacion.upper()
     print(f"[Buscador ReAct] ¿Es pregunta historica/cultural? {es_historica}")
 
     for intento in range(MAX_INTENTOS):
@@ -56,22 +97,29 @@ def agente_buscador(pregunta_original):
         if es_historica:
             contexto_suficiente = False
             print(f"[Buscador ReAct] Pregunta historica, forzando consulta MCP...")
-        else:
-            evaluacion = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[
+        elif fuentes_locales:
+            respuesta_evaluacion = llamar_llm(
+                MODELO_EVALUACION,
+                [
                     {"role": "system", "content": "Solo responde SI o NO."},
-                    {"role": "user",   "content": (
-                        f"¿El siguiente contexto menciona algo relacionado con '{pregunta}'? "
-                        f"Responde SI si hay aunque sea algo relevante.\n\n"
+                    {"role": "user", "content": (
+                        f"¿El siguiente contexto de recetas contiene información para responder a: '{pregunta}'?\n"
+                        f"Responde SI si contiene la receta o ingredientes/preparación relevantes.\n\n"
                         f"CONTEXTO:\n{contexto_acumulado}"
                     )}
                 ],
                 temperature=0,
-                max_tokens=5
+                max_tokens=50
             )
-            contexto_suficiente = "SI" in evaluacion.choices[0].message.content.upper()
+            # Si el evaluador responde SI o si el RAG local arrojó fuentes directas
+            contexto_suficiente = (
+                (respuesta_evaluacion is not None and "SI" in respuesta_evaluacion.upper())
+                or bool(fuentes_locales and len(contexto_acumulado.strip()) > 80)
+            )
             print(f"[Buscador ReAct] ¿RAG suficiente? {contexto_suficiente}")
+        else:
+            contexto_suficiente = False
+            print(f"[Buscador ReAct] ¿RAG suficiente? False (sin coincidencias locales)")
 
         # ACTUA: consultar MCP si RAG no fue suficiente o es pregunta historica
         if not contexto_suficiente and "Wikipedia (Servidor MCP)" not in fuentes_acumuladas:
@@ -82,22 +130,21 @@ def agente_buscador(pregunta_original):
                 fuentes_acumuladas.append("Wikipedia (Servidor MCP)")
 
                 # OBSERVA de nuevo: evaluar si MCP complemento suficientemente
-                evaluacion_mcp = client.chat.completions.create( 
-                    model="llama-3.1-8b-instant",
-                    messages=[
+                respuesta_evaluacion_mcp = llamar_llm(
+                    MODELO_EVALUACION,
+                    [
                         {"role": "system", "content": "Solo responde SI o NO."},
-                        {"role": "user",   "content": (
+                        {"role": "user", "content": (
                             f"¿El siguiente contexto menciona algo relacionado con '{pregunta}'? "
                             f"Responde SI si hay aunque sea algo relevante.\n\n"
                             f"CONTEXTO:\n{contexto_acumulado}"
                         )}
                     ],
                     temperature=0,
-                    max_tokens=5
+                    max_tokens=100
                 )
-                contexto_suficiente = "SI" in evaluacion_mcp.choices[0].message.content.upper()
+                contexto_suficiente = respuesta_evaluacion_mcp is not None and "SI" in respuesta_evaluacion_mcp.upper()
                 print(f"[Buscador ReAct] ¿RAG + MCP suficiente? {contexto_suficiente}")
-                # Una vez consultado el MCP en pregunta historica, continuar al Redactor
                 es_historica = False
 
         if contexto_suficiente:
@@ -106,9 +153,9 @@ def agente_buscador(pregunta_original):
         # RAZONA: reformular si no es el ultimo intento
         if intento + 1 < MAX_INTENTOS:
             print(f"[Buscador ReAct] Reformulando pregunta...")
-            reformulacion = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[
+            respuesta_reformulacion = llamar_llm(
+                MODELO_EVALUACION,
+                [
                     {"role": "system", "content": (
                         "Reformula la pregunta de forma mas corta y especifica. "
                         "Usa terminos venezolanos correctos como caraotas, pabellon, cachapas, arepas. "
@@ -117,16 +164,15 @@ def agente_buscador(pregunta_original):
                     {"role": "user", "content": f"Reformula de forma corta y especifica: '{pregunta}'"}
                 ],
                 temperature=0.3,
-                max_tokens=50
+                max_tokens=100
             )
-            pregunta = reformulacion.choices[0].message.content.strip()
-            print(f"[Buscador ReAct] Nueva pregunta: '{pregunta}'")
+            if respuesta_reformulacion:
+                pregunta = respuesta_reformulacion.strip()
+                print(f"[Buscador ReAct] Nueva pregunta: '{pregunta}'")
 
     return contexto_acumulado, fuentes_acumuladas
 
-# ─────────────────────────────────────────────
-# AGENTE 2 — REDACTOR (Chain)
-# ─────────────────────────────────────────────
+
 def agente_redactor(pregunta_original, contexto, fuentes):
     """
     Arquitectura Chain directa.
@@ -139,57 +185,63 @@ def agente_redactor(pregunta_original, contexto, fuentes):
         {
             "role": "system",
             "content": (
-                "Eres el Agente Chef Redactor de cocina venezolana. "
-                "Responde SIEMPRE con este formato exacto cuando sea una receta:\n"
-                "1. Nombre del plato como titulo\n"
-                "2. Seccion 'Ingredientes:' con lista completa\n"
-                "3. Seccion 'Preparacion:' con pasos numerados\n"
-                "4. Seccion 'Region:' y 'Tiempo de preparacion:' si estan disponibles\n"
-                "5. Al final SIEMPRE '📚 Fuentes consultadas:' listando TODOS los archivos usados\n\n"
-                "Si la pregunta es sobre historia o cultura: responde en narrativa y al final lista las fuentes.\n"
-                "Si la pregunta es sobre diferencias: usa comparacion y al final lista las fuentes.\n"
-                "NUNCA empieces con 'Segun la receta proporcionada' ni frases similares.\n"
-                "NUNCA menciones las fuentes al inicio, solo al final.\n"
-                "Ve directo al contenido."
+                "Eres el Agente Chef Redactor de cocina venezolana.\n\n"
+                "FORMATO OBLIGATORIO PARA RECETAS:\n"
+                "# [Nombre del plato]\n\n"
+                "## Ingredientes:\n"
+                "- [ingrediente 1]\n"
+                "- [ingrediente 2]\n\n"
+                "## Preparacion:\n"
+                "1. [paso 1]\n"
+                "2. [paso 2]\n\n"
+                "## Region: [region]\n"
+                "## Tiempo de preparacion: [tiempo]\n"
+                "## Porciones: [porciones]\n\n"
+                "📚 Fuentes consultadas:\n"
+                "- [nombre_archivo]\n\n"
+                "REGLAS:\n"
+                "- Los ingredientes van en lista con guion (-)\n"
+                "- Los pasos van numerados (1. 2. 3.)\n"
+                "- Si el corpus no tiene Region/Tiempo/Porciones, omite esas lineas\n"
+                "- SIEMPRE incluye las fuentes al final\n"
+                "- NUNCA empieces con 'Segun la receta' o similar\n"
+                "- Ve directo al contenido, sin introducciones\n\n"
+                "Para preguntas de historia/cultura: responde en parrafos normales y al final lista las fuentes.\n"
+                "Para diferencias: usa formato comparativo y al final lista las fuentes."
             )
         },
         *historial_conversacion,
         {
             "role": "user",
             "content": (
-                f"USA EXACTAMENTE esta informacion del corpus para responder:\n\n"
-                f"{contexto}\n\n"
+                f"CONTEXTO DEL CORPUS:\n{contexto}\n\n"
                 f"PREGUNTA: {pregunta_original}\n\n"
-                f"IMPORTANTE: Usa solo los ingredientes y pasos que aparecen arriba. No agregues nada extra."
+                f"INSTRUCCIONES:\n"
+                f"- Extrae ingredientes y pasos EXACTAMENTE como aparecen en el contexto\n"
+                f"- Numeras los pasos de preparacion (1. 2. 3.)\n"
+                f"- Si hay Region, Tiempo o Porciones en el contexto, incluyelos\n"
+                f"- Si falta informacion en el contexto, indica 'No disponible en la fuente'\n"
+                f"- Lista las fuentes al final en formato: - [nombre_archivo]"
             )
         }
     ]
 
-    try:
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=mensajes,
-            temperature=0.1,
-            max_tokens=1000
-        )
-        respuesta = completion.choices[0].message.content
+    respuesta = llamar_llm(MODELO_REDACTOR, mensajes, temperature=0.1, max_tokens=2000)
 
+    if respuesta:
         historial_conversacion.append({"role": "user",      "content": pregunta_original})
         historial_conversacion.append({"role": "assistant", "content": respuesta})
 
         if len(historial_conversacion) > 6:
             del historial_conversacion[:2]
-
-    except Exception as e:
-        respuesta = f"Error en el Agente Redactor: {str(e)}"
+    else:
+        respuesta = "Error: No se pudo generar una respuesta. Verifica la conexion con Groq."
 
     return respuesta
 
-# ─────────────────────────────────────────────
-# FUNCION PRINCIPAL
-# ─────────────────────────────────────────────
+
 def procesar_pregunta(pregunta: str) -> str:
     """Coordina los dos agentes: Buscador ReAct -> Redactor Chain."""
     contexto, fuentes = agente_buscador(pregunta)
     respuesta = agente_redactor(pregunta, contexto, fuentes)
-    return respuesta 
+    return respuesta
