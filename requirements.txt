@@ -3,6 +3,7 @@ torch
 torchvision
 streamlit
 groq
+sentence-transformers
 faiss-cpu>=1.8.0.post1
 requests>=2.32.3
 fpdf2>=2.7.9
